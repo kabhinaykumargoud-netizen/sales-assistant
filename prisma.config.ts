@@ -2,9 +2,10 @@ import { defineConfig } from 'prisma/config';
 
 export default defineConfig({
   earlyAccess: true,
-  migrate: {
-    // Supabase requires DIRECT_URL (port 5432) for schema migrations
+  datasource: {
     url: process.env.DIRECT_URL!,
+  },
+  migrate: {
     async adapter() {
       const { Pool } = await import('pg');
       const { PrismaPg } = await import('@prisma/adapter-pg');
