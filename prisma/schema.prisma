@@ -1,0 +1,229 @@
+generator client {
+  provider = "prisma-client-js"
+}
+
+datasource db {
+  provider = "postgresql"
+}
+
+model Business {
+  id           String   @id @default(uuid())
+  name         String
+  email        String   @unique
+  passwordHash String
+  phone        String?
+  whatsappNumber String?
+  plan         String   @default("free")
+  createdAt    DateTime @default(now())
+  updatedAt    DateTime @updatedAt
+
+  products     Product[]
+  leads        Lead[]
+  messages     Message[]
+  campaigns    Campaign[]
+  templates    Template[]
+  reminders    Reminder[]
+  agents       Agent[]
+  apiKeys      ApiKey[]
+}
+
+model Agent {
+  id           String   @id @default(uuid())
+  businessId   String
+  name         String
+  email        String
+  role         String   @default("agent")
+  createdAt    DateTime @default(now())
+
+  business     Business  @relation(fields: [businessId], references: [id])
+  messages     Message[]
+}
+
+model Product {
+  id           String   @id @default(uuid())
+  businessId   String
+  name         String
+  description  String?
+  price        Float
+  discountPrice Float?
+  stock        Int      @default(0)
+  category     String?
+  imageUrl     String?
+  videoUrl     String?
+  isActive     Boolean  @default(true)
+  createdAt    DateTime @default(now())
+  updatedAt    DateTime @updatedAt
+
+  business     Business  @relation(fields: [businessId], references: [id])
+  bundles      BundleItem[]
+  messageItems MessageItem[]
+}
+
+model Bundle {
+  id           String   @id @default(uuid())
+  name         String
+  description  String?
+  totalPrice   Float
+  createdAt    DateTime @default(now())
+
+  items        BundleItem[]
+}
+
+model BundleItem {
+  id         String  @id @default(uuid())
+  bundleId   String
+  productId  String
+  quantity   Int     @default(1)
+
+  bundle     Bundle   @relation(fields: [bundleId], references: [id])
+  product    Product  @relation(fields: [productId], references: [id])
+}
+
+model Lead {
+  id              String   @id @default(uuid())
+  businessId      String
+  name            String
+  phone           String
+  language        String?
+  stage           String   @default("new")
+  status          String   @default("active")
+  intentScore     Int      @default(0)
+  lifetimeValue   Float    @default(0)
+  orderCount      Int      @default(0)
+  tags            String?
+  notes           String?
+  lostReason      String?
+  source          String?
+  assignedAgentId String?
+  lastContactedAt DateTime?
+  createdAt       DateTime @default(now())
+  updatedAt       DateTime @updatedAt
+
+  business         Business   @relation(fields: [businessId], references: [id])
+  messages         Message[]
+  reminders        Reminder[]
+  enquiries        Enquiry[]
+  stageHistory     StageHistory[]
+}
+
+model StageHistory {
+  id        String   @id @default(uuid())
+  leadId    String
+  fromStage String
+  toStage   String
+  changedAt DateTime @default(now())
+  reason    String?
+
+  lead      Lead     @relation(fields: [leadId], references: [id])
+}
+
+model Message {
+  id            String   @id @default(uuid())
+  businessId    String
+  leadId        String
+  agentId       String?
+  direction     String
+  content       String
+  type          String   @default("text")
+  status        String   @default("sent")
+  isAiGenerated Boolean  @default(false)
+  aiScore       Float?
+  sentiment     String?
+  intentScore   Int?
+  readAt        DateTime?
+  deliveredAt   DateTime?
+  createdAt     DateTime @default(now())
+
+  business     Business      @relation(fields: [businessId], references: [id])
+  lead         Lead          @relation(fields: [leadId], references: [id])
+  agent        Agent?        @relation(fields: [agentId], references: [id])
+  items        MessageItem[]
+}
+
+model MessageItem {
+  id        String  @id @default(uuid())
+  messageId String
+  productId String
+  quantity  Int     @default(1)
+
+  message   Message @relation(fields: [messageId], references: [id])
+  product   Product @relation(fields: [productId], references: [id])
+}
+
+model Campaign {
+  id          String   @id @default(uuid())
+  businessId  String
+  name        String
+  type        String
+  content     String
+  segment     String?
+  status      String   @default("draft")
+  scheduledAt DateTime?
+  sentAt      DateTime?
+  sentCount   Int      @default(0)
+  replyCount  Int      @default(0)
+  createdAt   DateTime @default(now())
+
+  business    Business @relation(fields: [businessId], references: [id])
+}
+
+model Template {
+  id          String   @id @default(uuid())
+  businessId  String
+  name        String
+  category    String
+  content     String
+  language    String   @default("en")
+  usageCount  Int      @default(0)
+  createdAt   DateTime @default(now())
+
+  business    Business @relation(fields: [businessId], references: [id])
+}
+
+model Reminder {
+  id          String   @id @default(uuid())
+  businessId  String
+  leadId      String
+  title       String
+  notes       String?
+  dueAt       DateTime
+  status      String   @default("pending")
+  priority    String   @default("normal")
+  completedAt DateTime?
+  createdAt   DateTime @default(now())
+
+  business    Business @relation(fields: [businessId], references: [id])
+  lead        Lead     @relation(fields: [leadId], references: [id])
+}
+
+model Enquiry {
+  id         String   @id @default(uuid())
+  leadId     String
+  productId  String?
+  message    String
+  quantity   Int?
+  budget     Float?
+  status     String   @default("open")
+  createdAt  DateTime @default(now())
+
+  lead       Lead     @relation(fields: [leadId], references: [id])
+}
+
+model Waitlist {
+  id         String   @id @default(uuid())
+  leadId     String
+  productId  String
+  notified   Boolean  @default(false)
+  createdAt  DateTime @default(now())
+}
+
+model ApiKey {
+  id         String   @id @default(uuid())
+  businessId String
+  key        String   @unique
+  name       String?
+  lastUsedAt DateTime?
+  createdAt  DateTime @default(now())
+
+  business   Business @relation(fields: [businessId], references: [id])
+}

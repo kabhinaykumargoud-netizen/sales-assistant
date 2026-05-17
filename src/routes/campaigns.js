@@ -1,0 +1,10 @@
+const router = require('express').Router();
+const c = require('../controllers/campaignController');
+const { authenticate } = require('../middleware/auth');
+router.use(authenticate);
+router.get('/',             c.getCampaigns);
+router.post('/',            c.createCampaign);
+router.post('/flash-sale',  c.createFlashSale);
+router.post('/:id/send',    c.sendCampaign);
+router.delete('/:id',       c.deleteCampaign);
+module.exports = router;

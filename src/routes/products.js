@@ -1,0 +1,13 @@
+const router = require('express').Router();
+const c = require('../controllers/productController');
+const { authenticate } = require('../middleware/auth');
+router.use(authenticate);
+router.get('/',                           c.getProducts);
+router.post('/',                          c.createProduct);
+router.get('/:id',                        c.getProduct);
+router.patch('/:id',                      c.updateProduct);
+router.delete('/:id',                     c.deleteProduct);
+router.post('/:id/restock',               c.restockProduct);
+router.post('/:id/waitlist',              c.joinWaitlist);
+router.get('/:id/bundle-recommendations', c.getBundleRecommendations);
+module.exports = router;

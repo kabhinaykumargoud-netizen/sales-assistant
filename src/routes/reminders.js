@@ -1,0 +1,11 @@
+const router = require('express').Router();
+const c = require('../controllers/reminderController');
+const { authenticate } = require('../middleware/auth');
+router.use(authenticate);
+router.get('/',                c.getReminders);
+router.post('/',               c.createReminder);
+router.patch('/:id/complete',  c.completeReminder);
+router.patch('/:id/snooze',    c.snoozeReminder);
+router.post('/:id/follow-up',  c.generateFollowUpMessage);
+router.delete('/:id',          c.deleteReminder);
+module.exports = router;

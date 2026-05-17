@@ -1,0 +1,11 @@
+const router = require('express').Router();
+const c = require('../controllers/analyticsController');
+const { authenticate } = require('../middleware/auth');
+router.use(authenticate);
+router.get('/dashboard', c.getDashboard);
+router.get('/funnel',    c.getFunnel);
+router.get('/heatmap',   c.getReplyHeatmap);
+router.get('/revenue',   c.getRevenueForecast);
+router.get('/sentiment', c.getSentimentTrend);
+router.get('/agents',    c.getAgentPerformance);
+module.exports = router;

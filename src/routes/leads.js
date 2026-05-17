@@ -1,0 +1,13 @@
+const router = require('express').Router();
+const c = require('../controllers/leadController');
+const { authenticate } = require('../middleware/auth');
+router.use(authenticate);
+router.get('/pipeline/summary', c.pipelineSummary);
+router.get('/',              c.getLeads);
+router.post('/',             c.createLead);
+router.get('/:id',           c.getLead);
+router.patch('/:id',         c.updateLead);
+router.delete('/:id',        c.deleteLead);
+router.post('/:id/stage',    c.moveStage);
+router.post('/:id/tag-lost', c.tagLost);
+module.exports = router;
