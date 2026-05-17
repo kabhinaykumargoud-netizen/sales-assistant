@@ -1,5 +1,5 @@
 const { v4: uuid } = require('uuid');
-const prisma = require('../utils/prisma');
+const supabase = require('../utils/supabase');
 const { parseWebhookPayload, markMessageRead } = require('../services/whatsappService');
 const { detectLanguage, analyseSentiment, scoreIntent } = require('../services/aiService');
 const { processAutoReply } = require('./messageController');
@@ -30,24 +30,25 @@ const handleWebhook = async (req, res) => {
     const { from, text, name, messageId, timestamp } = parsed;
 
     // Find which business owns this WhatsApp number
-    const business = await prisma.business.findFirst({
-      where: { whatsappNumber: from }
-    });
+    let { data: business } = await supabase.from('Business').select('*').eq('whatsappNumber', from).maybeSingle();
 
     // For demo: use first business if whatsappNumber not set up
-    const biz = business || await prisma.business.findFirst({});
-    if (!biz) return;
+    if (!business) {
+      const { data: fallbackBiz } = await supabase.from('Business').select('*').limit(1).single();
+      business = fallbackBiz;
+    }
+    if (!business) return;
 
     // Find or create lead
-    let lead = await prisma.lead.findFirst({ where: { phone: from, businessId: biz.id } });
+    let { data: lead } = await supabase.from('Lead').select('*').eq('phone', from).eq('businessId', business.id).maybeSingle();
+    
     if (!lead) {
       const language = await detectLanguage(text);
-      lead = await prisma.lead.create({
-        data: {
-          id: uuid(), businessId: biz.id,
-          name, phone: from, language, stage: 'new', status: 'active', source: 'whatsapp'
-        }
-      });
+      const { data: newLead } = await supabase.from('Lead').insert([{
+        id: uuid(), businessId: business.id,
+        name, phone: from, language, stage: 'new', status: 'active', source: 'whatsapp'
+      }]).select().single();
+      lead = newLead;
     }
 
     // Detect language & sentiment in background
@@ -57,26 +58,30 @@ const handleWebhook = async (req, res) => {
     ]);
 
     // Store incoming message
-    const message = await prisma.message.create({
-      data: {
-        id: uuid(), businessId: biz.id, leadId: lead.id,
-        direction: 'incoming', content: text, type: 'text',
-        status: 'received', sentiment, intentScore: 0,
-        createdAt: timestamp
-      }
-    });
+    await supabase.from('Message').insert([{
+      id: uuid(), businessId: business.id, leadId: lead.id,
+      direction: 'incoming', content: text, type: 'text',
+      status: 'received', sentiment, intentScore: 0,
+      createdAt: timestamp
+    }]);
 
     // Score intent from full history
-    const history = await prisma.message.findMany({
-      where: { leadId: lead.id }, orderBy: { createdAt: 'asc' }, take: 15
-    });
-    const intentScore = await scoreIntent(history);
+    const { data: history } = await supabase
+      .from('Message')
+      .select('*')
+      .eq('leadId', lead.id)
+      .order('createdAt', { ascending: true })
+      .limit(15);
+      
+    const intentScore = await scoreIntent(history || []);
 
     // Update lead
-    await prisma.lead.update({
-      where: { id: lead.id },
-      data: { intentScore, language, lastContactedAt: new Date(), updatedAt: new Date() }
-    });
+    await supabase.from('Lead').update({ 
+      intentScore, 
+      language, 
+      lastContactedAt: new Date().toISOString(), 
+      updatedAt: new Date().toISOString() 
+    }).eq('id', lead.id);
 
     // Mark as read on WhatsApp
     await markMessageRead(messageId);
@@ -85,7 +90,7 @@ const handleWebhook = async (req, res) => {
     // (in production this would check a settings flag)
     if (intentScore < 85) {
       // Only auto-reply for low-confidence messages; high intent = human should step in
-      await processAutoReply(biz.id, lead.id, text);
+      await processAutoReply(business.id, lead.id, text);
     }
 
     console.log(`[WEBHOOK] Message from ${from} (${name}), intent: ${intentScore}, sentiment: ${sentiment}`);

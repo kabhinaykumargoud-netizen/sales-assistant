@@ -1,34 +1,43 @@
 const { v4: uuid } = require('uuid');
-const prisma = require('../utils/prisma');
+const supabase = require('../utils/supabase');
 const { recommendBundles } = require('../services/aiService');
 
 // GET /products
 const getProducts = async (req, res, next) => {
   try {
     const { category, isActive, search, page = 1, limit = 20 } = req.query;
-    const where = {
-      businessId: req.business.id,
-      ...(category && { category }),
-      ...(isActive !== undefined && { isActive: isActive === 'true' }),
-      ...(search && {
-        OR: [{ name: { contains: search } }, { description: { contains: search } }]
-      })
-    };
-    const [products, total] = await Promise.all([
-      prisma.product.findMany({ where, orderBy: { createdAt: 'desc' }, skip: (page-1)*Number(limit), take: Number(limit) }),
-      prisma.product.count({ where })
-    ]);
-    res.json({ products, total });
+    const pageNum = Number(page);
+    const limitNum = Number(limit);
+
+    let query = supabase
+      .from('Product')
+      .select('*', { count: 'exact' })
+      .eq('businessId', req.business.id)
+      .order('createdAt', { ascending: false })
+      .range((pageNum - 1) * limitNum, pageNum * limitNum - 1);
+
+    if (category) query = query.eq('category', category);
+    if (isActive !== undefined) query = query.eq('isActive', isActive === 'true');
+    if (search) query = query.or(`name.ilike.%${search}%,description.ilike.%${search}%`);
+
+    const { data: products, count, error } = await query;
+    if (error) throw error;
+
+    res.json({ products: products || [], total: count || 0 });
   } catch (err) { next(err); }
 };
 
 // GET /products/:id
 const getProduct = async (req, res, next) => {
   try {
-    const product = await prisma.product.findFirst({
-      where: { id: req.params.id, businessId: req.business.id }
-    });
-    if (!product) return res.status(404).json({ error: 'Product not found' });
+    const { data: product, error } = await supabase
+      .from('Product')
+      .select('*')
+      .eq('id', req.params.id)
+      .eq('businessId', req.business.id)
+      .single();
+      
+    if (error || !product) return res.status(404).json({ error: 'Product not found' });
     res.json(product);
   } catch (err) { next(err); }
 };
@@ -38,9 +47,19 @@ const createProduct = async (req, res, next) => {
   try {
     const { name, description, price, discountPrice, stock, category, imageUrl, videoUrl } = req.body;
     if (!name || price === undefined) return res.status(400).json({ error: 'name and price are required' });
-    const product = await prisma.product.create({
-      data: { id: uuid(), businessId: req.business.id, name, description, price: Number(price), discountPrice: discountPrice ? Number(discountPrice) : null, stock: Number(stock || 0), category, imageUrl, videoUrl }
-    });
+    
+    const { data: product, error } = await supabase
+      .from('Product')
+      .insert([{
+        id: uuid(), businessId: req.business.id, 
+        name, description, price: Number(price), 
+        discountPrice: discountPrice ? Number(discountPrice) : null, 
+        stock: Number(stock || 0), category, imageUrl, videoUrl
+      }])
+      .select()
+      .single();
+      
+    if (error) throw error;
     res.status(201).json(product);
   } catch (err) { next(err); }
 };
@@ -53,7 +72,15 @@ const updateProduct = async (req, res, next) => {
     allowed.forEach(k => { if (req.body[k] !== undefined) data[k] = req.body[k]; });
     if (data.price) data.price = Number(data.price);
     if (data.stock) data.stock = Number(data.stock);
-    const product = await prisma.product.update({ where: { id: req.params.id }, data });
+    
+    const { data: product, error } = await supabase
+      .from('Product')
+      .update(data)
+      .eq('id', req.params.id)
+      .select()
+      .single();
+      
+    if (error) throw error;
     res.json(product);
   } catch (err) { next(err); }
 };
@@ -61,7 +88,8 @@ const updateProduct = async (req, res, next) => {
 // DELETE /products/:id
 const deleteProduct = async (req, res, next) => {
   try {
-    await prisma.product.delete({ where: { id: req.params.id } });
+    const { error } = await supabase.from('Product').delete().eq('id', req.params.id);
+    if (error) throw error;
     res.json({ message: 'Product deleted' });
   } catch (err) { next(err); }
 };
@@ -71,25 +99,33 @@ const restockProduct = async (req, res, next) => {
   try {
     const { quantity } = req.body;
     if (!quantity) return res.status(400).json({ error: 'quantity is required' });
-    const product = await prisma.product.update({
-      where: { id: req.params.id },
-      data: { stock: { increment: Number(quantity) } }
-    });
+
+    // Fetch current stock
+    const { data: currentProduct, error: pErr } = await supabase.from('Product').select('stock, name').eq('id', req.params.id).single();
+    if (pErr || !currentProduct) return res.status(404).json({ error: 'Product not found' });
+
+    const { data: product, error: updateErr } = await supabase
+      .from('Product')
+      .update({ stock: (currentProduct.stock || 0) + Number(quantity) })
+      .eq('id', req.params.id)
+      .select()
+      .single();
+    if (updateErr) throw updateErr;
+
     // Notify waitlisted leads
-    const waitlist = await prisma.waitlist.findMany({
-      where: { productId: req.params.id, notified: false }
-    });
-    if (waitlist.length) {
+    const { data: waitlist } = await supabase.from('Waitlist').select('*').eq('productId', req.params.id).eq('notified', false);
+    
+    if (waitlist && waitlist.length) {
       const { sendTextMessage } = require('../services/whatsappService');
       for (const w of waitlist) {
-        const lead = await prisma.lead.findUnique({ where: { id: w.leadId }, select: { phone: true, name: true } });
+        const { data: lead } = await supabase.from('Lead').select('phone, name').eq('id', w.leadId).single();
         if (lead) {
           await sendTextMessage(lead.phone, `Hi ${lead.name}! Great news — "${product.name}" is back in stock! Reply to order now 🎉`).catch(() => {});
-          await prisma.waitlist.update({ where: { id: w.id }, data: { notified: true } });
+          await supabase.from('Waitlist').update({ notified: true }).eq('id', w.id);
         }
       }
     }
-    res.json({ product, waitlistNotified: waitlist.length });
+    res.json({ product, waitlistNotified: waitlist ? waitlist.length : 0 });
   } catch (err) { next(err); }
 };
 
@@ -98,9 +134,14 @@ const joinWaitlist = async (req, res, next) => {
   try {
     const { leadId } = req.body;
     if (!leadId) return res.status(400).json({ error: 'leadId is required' });
-    const entry = await prisma.waitlist.create({
-      data: { id: uuid(), leadId, productId: req.params.id }
-    });
+    
+    const { data: entry, error } = await supabase
+      .from('Waitlist')
+      .insert([{ id: uuid(), leadId, productId: req.params.id }])
+      .select()
+      .single();
+      
+    if (error) throw error;
     res.status(201).json(entry);
   } catch (err) { next(err); }
 };
@@ -108,14 +149,13 @@ const joinWaitlist = async (req, res, next) => {
 // GET /products/:id/bundle-recommendations
 const getBundleRecommendations = async (req, res, next) => {
   try {
-    const product = await prisma.product.findFirst({ where: { id: req.params.id, businessId: req.business.id } });
-    if (!product) return res.status(404).json({ error: 'Product not found' });
-    const allProducts = await prisma.product.findMany({
-      where: { businessId: req.business.id, isActive: true, id: { not: req.params.id } },
-      select: { name: true, id: true }
-    });
-    const names = await recommendBundles(product.name, allProducts);
-    const recommended = allProducts.filter(p => names.includes(p.name));
+    const { data: product, error: pErr } = await supabase.from('Product').select('*').eq('id', req.params.id).eq('businessId', req.business.id).single();
+    if (pErr || !product) return res.status(404).json({ error: 'Product not found' });
+
+    const { data: allProducts } = await supabase.from('Product').select('name, id').eq('businessId', req.business.id).eq('isActive', true).neq('id', req.params.id);
+    
+    const names = await recommendBundles(product.name, allProducts || []);
+    const recommended = (allProducts || []).filter(p => names.includes(p.name));
     res.json({ product: product.name, recommendedBundles: recommended });
   } catch (err) { next(err); }
 };

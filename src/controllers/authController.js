@@ -1,7 +1,7 @@
 const bcrypt  = require('bcryptjs');
 const jwt     = require('jsonwebtoken');
 const { v4: uuid } = require('uuid');
-const prisma  = require('../utils/prisma');
+const supabase = require('../utils/supabase');
 
 const signToken = (businessId, email) =>
   jwt.sign({ businessId, email }, process.env.JWT_SECRET, { expiresIn: '7d' });
@@ -13,13 +13,17 @@ const register = async (req, res, next) => {
     if (!name || !email || !password)
       return res.status(400).json({ error: 'name, email and password are required' });
 
-    const existing = await prisma.business.findUnique({ where: { email } });
+    const { data: existing } = await supabase.from('Business').select('id').eq('email', email).single();
     if (existing) return res.status(409).json({ error: 'Email already registered' });
 
     const passwordHash = await bcrypt.hash(password, 12);
-    const business = await prisma.business.create({
-      data: { id: uuid(), name, email, passwordHash, phone, whatsappNumber }
-    });
+    const { data: business, error } = await supabase
+      .from('Business')
+      .insert([{ id: uuid(), name, email, passwordHash, phone, whatsappNumber }])
+      .select()
+      .single();
+      
+    if (error) throw error;
 
     const token = signToken(business.id, business.email);
     res.status(201).json({
@@ -36,8 +40,8 @@ const login = async (req, res, next) => {
     if (!email || !password)
       return res.status(400).json({ error: 'email and password are required' });
 
-    const business = await prisma.business.findUnique({ where: { email } });
-    if (!business) return res.status(401).json({ error: 'Invalid credentials' });
+    const { data: business, error } = await supabase.from('Business').select('*').eq('email', email).single();
+    if (error || !business) return res.status(401).json({ error: 'Invalid credentials' });
 
     const valid = await bcrypt.compare(password, business.passwordHash);
     if (!valid) return res.status(401).json({ error: 'Invalid credentials' });
@@ -53,10 +57,13 @@ const login = async (req, res, next) => {
 // GET /auth/me
 const me = async (req, res, next) => {
   try {
-    const business = await prisma.business.findUnique({
-      where: { id: req.business.id },
-      select: { id:true, name:true, email:true, phone:true, whatsappNumber:true, plan:true, createdAt:true }
-    });
+    const { data: business, error } = await supabase
+      .from('Business')
+      .select('id, name, email, phone, whatsappNumber, plan, createdAt')
+      .eq('id', req.business.id)
+      .single();
+      
+    if (error) throw error;
     res.json(business);
   } catch (err) { next(err); }
 };
@@ -65,11 +72,14 @@ const me = async (req, res, next) => {
 const updateProfile = async (req, res, next) => {
   try {
     const { name, phone, whatsappNumber } = req.body;
-    const business = await prisma.business.update({
-      where: { id: req.business.id },
-      data: { name, phone, whatsappNumber },
-      select: { id:true, name:true, email:true, phone:true, whatsappNumber:true }
-    });
+    const { data: business, error } = await supabase
+      .from('Business')
+      .update({ name, phone, whatsappNumber })
+      .eq('id', req.business.id)
+      .select('id, name, email, phone, whatsappNumber')
+      .single();
+      
+    if (error) throw error;
     res.json(business);
   } catch (err) { next(err); }
 };
@@ -78,11 +88,16 @@ const updateProfile = async (req, res, next) => {
 const changePassword = async (req, res, next) => {
   try {
     const { currentPassword, newPassword } = req.body;
-    const business = await prisma.business.findUnique({ where: { id: req.business.id } });
+    const { data: business, error: findError } = await supabase.from('Business').select('passwordHash').eq('id', req.business.id).single();
+    if (findError) throw findError;
+    
     const valid = await bcrypt.compare(currentPassword, business.passwordHash);
     if (!valid) return res.status(401).json({ error: 'Current password is incorrect' });
+    
     const passwordHash = await bcrypt.hash(newPassword, 12);
-    await prisma.business.update({ where: { id: req.business.id }, data: { passwordHash } });
+    const { error: updateError } = await supabase.from('Business').update({ passwordHash }).eq('id', req.business.id);
+    if (updateError) throw updateError;
+    
     res.json({ message: 'Password updated successfully' });
   } catch (err) { next(err); }
 };

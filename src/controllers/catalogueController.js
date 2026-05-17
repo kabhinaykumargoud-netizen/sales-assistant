@@ -1,24 +1,26 @@
 const { v4: uuid } = require('uuid');
-const prisma = require('../utils/prisma');
-const { sendDocumentMessage } = require('../services/whatsappService');
+const supabase = require('../utils/supabase');
+const { sendDocumentMessage, sendTextMessage } = require('../services/whatsappService');
 const { generateInvoiceText } = require('../services/aiService');
 
 // GET /catalogue — all active products formatted for sharing
 const getCatalogue = async (req, res, next) => {
   try {
     const { category } = req.query;
-    const products = await prisma.product.findMany({
-      where: { businessId: req.business.id, isActive: true, ...(category && { category }) },
-      orderBy: [{ category: 'asc' }, { name: 'asc' }]
-    });
+    let query = supabase.from('Product').select('*').eq('businessId', req.business.id).eq('isActive', true).order('category').order('name');
+    if (category) query = query.eq('category', category);
+    
+    const { data: products, error } = await query;
+    if (error) throw error;
+    
     // Group by category
-    const grouped = products.reduce((acc, p) => {
+    const grouped = (products || []).reduce((acc, p) => {
       const cat = p.category || 'General';
       if (!acc[cat]) acc[cat] = [];
       acc[cat].push(p);
       return acc;
     }, {});
-    res.json({ catalogue: grouped, totalProducts: products.length });
+    res.json({ catalogue: grouped, totalProducts: (products || []).length });
   } catch (err) { next(err); }
 };
 
@@ -28,33 +30,35 @@ const shareCatalogue = async (req, res, next) => {
     const { leadId, productIds, message } = req.body;
     if (!leadId) return res.status(400).json({ error: 'leadId is required' });
 
-    const lead = await prisma.lead.findFirst({ where: { id: leadId, businessId: req.business.id } });
-    if (!lead) return res.status(404).json({ error: 'Lead not found' });
+    const { data: lead, error: leadErr } = await supabase.from('Lead').select('*').eq('id', leadId).eq('businessId', req.business.id).single();
+    if (leadErr || !lead) return res.status(404).json({ error: 'Lead not found' });
 
-    const products = productIds?.length
-      ? await prisma.product.findMany({ where: { id: { in: productIds }, businessId: req.business.id } })
-      : await prisma.product.findMany({ where: { businessId: req.business.id, isActive: true }, take: 20 });
+    let products = [];
+    if (productIds?.length) {
+      const { data } = await supabase.from('Product').select('*').in('id', productIds).eq('businessId', req.business.id);
+      products = data || [];
+    } else {
+      const { data } = await supabase.from('Product').select('*').eq('businessId', req.business.id).eq('isActive', true).limit(20);
+      products = data || [];
+    }
 
     const catalogueText = buildCatalogueText(products, message || `Hi ${lead.name}! Here's our catalogue:`);
-    const { sendTextMessage } = require('../services/whatsappService');
     const result = await sendTextMessage(lead.phone, catalogueText);
 
     // Save message
-    const msg = await prisma.message.create({
-      data: {
-        id: uuid(), businessId: req.business.id, leadId,
-        direction: 'outgoing', content: catalogueText, type: 'catalogue',
-        status: result.status, isAiGenerated: false
-      }
-    });
+    const { data: msg, error: msgErr } = await supabase.from('Message').insert([{
+      id: uuid(), businessId: req.business.id, leadId,
+      direction: 'outgoing', content: catalogueText, type: 'catalogue',
+      status: result.status, isAiGenerated: false
+    }]).select().single();
+    if (msgErr) throw msgErr;
 
     // Move lead stage to catalogue_sent
-    const prevLead = await prisma.lead.findUnique({ where: { id: leadId } });
-    if (prevLead.stage === 'new') {
-      await prisma.$transaction([
-        prisma.lead.update({ where: { id: leadId }, data: { stage: 'catalogue_sent', updatedAt: new Date() } }),
-        prisma.stageHistory.create({ data: { id: uuid(), leadId, fromStage: 'new', toStage: 'catalogue_sent', reason: 'Catalogue shared' } })
-      ]);
+    if (lead.stage === 'new') {
+      await supabase.from('Lead').update({ stage: 'catalogue_sent', updatedAt: new Date().toISOString() }).eq('id', leadId);
+      await supabase.from('StageHistory').insert([{
+        id: uuid(), leadId, fromStage: 'new', toStage: 'catalogue_sent', reason: 'Catalogue shared'
+      }]);
     }
 
     res.json({ message: msg, productsShared: products.length });
@@ -67,32 +71,33 @@ const generateInvoice = async (req, res, next) => {
     const { leadId, items } = req.body;
     if (!leadId || !items?.length) return res.status(400).json({ error: 'leadId and items are required' });
 
-    const lead = await prisma.lead.findFirst({ where: { id: leadId, businessId: req.business.id } });
-    if (!lead) return res.status(404).json({ error: 'Lead not found' });
+    const { data: lead, error: leadErr } = await supabase.from('Lead').select('*').eq('id', leadId).eq('businessId', req.business.id).single();
+    if (leadErr || !lead) return res.status(404).json({ error: 'Lead not found' });
 
     const productIds = items.map(i => i.productId);
-    const products = await prisma.product.findMany({ where: { id: { in: productIds } } });
+    const { data: products } = await supabase.from('Product').select('*').in('id', productIds);
+    
     const enriched = items.map(i => {
-      const p = products.find(p => p.id === i.productId);
+      const p = (products || []).find(p => p.id === i.productId);
       return { name: p?.name || 'Item', qty: i.quantity || 1, price: p?.price || 0 };
     });
     const subtotal = enriched.reduce((a, i) => a + i.price * i.qty, 0);
     const invoice = await generateInvoiceText(lead, enriched, subtotal);
 
     // Send invoice via WhatsApp
-    const { sendTextMessage } = require('../services/whatsappService');
     await sendTextMessage(lead.phone, invoice);
 
     // Update lead lifetime value
     const gst = subtotal * 0.18;
-    await prisma.lead.update({
-      where: { id: leadId },
-      data: {
-        lifetimeValue: { increment: subtotal + gst },
-        orderCount: { increment: 1 },
-        stage: 'closed_won', updatedAt: new Date()
-      }
-    });
+    const currentLtv = lead.lifetimeValue || 0;
+    const currentOrders = lead.orderCount || 0;
+    
+    await supabase.from('Lead').update({
+      lifetimeValue: currentLtv + subtotal + gst,
+      orderCount: currentOrders + 1,
+      stage: 'closed_won', 
+      updatedAt: new Date().toISOString()
+    }).eq('id', leadId);
 
     res.json({ invoice, subtotal, gst: Math.round(gst), total: Math.round(subtotal + gst) });
   } catch (err) { next(err); }
