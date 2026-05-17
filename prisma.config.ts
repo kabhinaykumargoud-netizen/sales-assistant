@@ -3,7 +3,7 @@ import { defineConfig } from 'prisma/config';
 export default defineConfig({
   earlyAccess: true,
   datasource: {
-    url: process.env.DIRECT_URL!,
+    url: process.env.DIRECT_URL || process.env.DATABASE_URL || 'postgresql://dummy:dummy@localhost:5432/dummy',
   },
   migrate: {
     async adapter() {
